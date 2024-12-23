@@ -1,0 +1,17 @@
+{
+    "run_type": "client",
+    "local_addr": "127.0.0.1",
+    "local_port": 7777,
+    "remote_addr": "drogon.store",
+    "remote_port": 5555,
+    "http_proxy": "",
+    "passwd": "123hello",
+    "threads": 4,
+    "ssl": {
+        "verify": true,
+        "crt": "",
+        "key": "",
+        "session_timeout": 0
+    },
+    "log_level": "debug"
+}

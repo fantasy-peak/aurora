@@ -1,0 +1,17 @@
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",
+    "local_port": 5555,
+    "remote_addr": "",
+    "remote_port": 0,
+    "http_proxy": "",
+    "passwd": "123hello",
+    "threads": 4,
+    "ssl": {
+        "verify": false,
+        "crt": "/data/v2ray.crt",
+        "key": "/data/v2ray.key",
+        "session_timeout": 300
+    },
+    "log_level": "debug"
+}
