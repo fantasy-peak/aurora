@@ -29,6 +29,7 @@ target("aurora")
         "src/modules/core/utils.cppm",
         "src/modules/core/boost.cppm",
         "src/modules/core/root.cppm",
+        "src/modules/core/var.cppm",
         "src/modules/core/network.cppm", {public = true})
     add_files("src/modules/server.cppm",
         "src/modules/client.cppm", {public = true})

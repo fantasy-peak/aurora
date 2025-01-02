@@ -11,10 +11,7 @@ import Utils;
 import UdpPacket;
 import TrojanRequest;
 import Config;
-
-constexpr auto use_nothrow_awaitable = asio::as_tuple(asio::use_awaitable);
-constexpr std::size_t BUFFER_SIZE = 1024 * 10;
-constexpr int32_t MAX_LEN = 1024 * 8;
+import var;
 
 asio::awaitable<void> http301(
     auto& socket,

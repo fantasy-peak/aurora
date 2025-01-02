@@ -14,10 +14,7 @@ import TrojanRequest;
 import Config;
 import Cert;
 import Socks5Address;
-
-constexpr auto use_nothrow_awaitable = asio::as_tuple(asio::use_awaitable);
-constexpr std::size_t BUFFER_SIZE = 1024 * 10;
-constexpr int32_t MAX_LEN = 1024 * 8;
+import var;
 
 asio::awaitable<void> forward(auto& from_socket, auto& to_socket) {
     char buff[BUFFER_SIZE];
