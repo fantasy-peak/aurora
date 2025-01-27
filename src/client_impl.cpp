@@ -20,7 +20,7 @@ asio::awaitable<void> forward(auto& from_socket, auto& to_socket) {
     char buff[BUFFER_SIZE];
     asio::steady_timer timer(co_await asio::this_coro::executor);
     for (;;) {
-        timer.expires_from_now(std::chrono::minutes(30));
+        timer.expires_after(std::chrono::minutes(30));
         auto result = co_await (
             from_socket->async_read_some(asio::buffer(buff, sizeof(buff)),
                                          use_nothrow_awaitable) ||
@@ -63,10 +63,10 @@ TrojanClient::createSocket(const std::string& target_ip,
     asio::ip::tcp::socket socket{co_await asio::this_coro::executor};
 
     asio::steady_timer timer(co_await asio::this_coro::executor);
-    timer.expires_from_now(std::chrono::seconds(10));
-    auto result =
-        co_await (socket.async_connect(*results, use_nothrow_awaitable) ||
-                  timer.async_wait(asio::as_tuple(asio::use_awaitable)));
+    timer.expires_after(std::chrono::seconds(10));
+    auto result = co_await (
+        socket.async_connect(*(results.begin()), use_nothrow_awaitable) ||
+        timer.async_wait(asio::as_tuple(asio::use_awaitable)));
     if (result.index() == 0) {
         auto [ec] = std::get<0>(result);
         if (ec) {

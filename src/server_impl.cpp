@@ -26,7 +26,7 @@ asio::awaitable<void> forward(auto& from_socket, auto& to_socket) {
     char buff[BUFFER_SIZE];
     asio::steady_timer timer(co_await asio::this_coro::executor);
     for (;;) {
-        timer.expires_from_now(std::chrono::minutes(30));
+        timer.expires_after(std::chrono::minutes(30));
         auto result = co_await (
             from_socket->async_read_some(asio::buffer(buff, sizeof(buff)),
                                          use_nothrow_awaitable) ||
@@ -95,7 +95,7 @@ asio::awaitable<void> TrojanServer::session(
     std::string request;
     char buffer[BUFFER_SIZE];
     for (;;) {
-        timer.expires_from_now(std::chrono::seconds(30));
+        timer.expires_after(std::chrono::seconds(30));
         auto result = co_await (
             socket->async_read_some(asio::buffer(buffer, sizeof(buffer)),
                                     use_nothrow_awaitable) ||
@@ -154,9 +154,9 @@ asio::awaitable<void> TrojanServer::session(
                   ec.message());
             co_return;
         }
-        timer.expires_from_now(std::chrono::seconds(30));
+        timer.expires_after(std::chrono::seconds(30));
         auto result = co_await (
-            out_socket->async_connect(*results, use_nothrow_awaitable) ||
+            out_socket->async_connect(*(results.begin()), use_nothrow_awaitable) ||
             timer.async_wait(asio::as_tuple(asio::use_awaitable)));
         if (result.index() == 0) {
             auto [ec] = std::get<0>(result);
@@ -211,7 +211,7 @@ asio::awaitable<void> TrojanServer::session(
             size_t packet_len;
             bool is_packet_valid = packet.parse(payload, packet_len);
             if (!is_packet_valid) {
-                timer.expires_from_now(std::chrono::minutes(30));
+                timer.expires_after(std::chrono::minutes(30));
                 auto result = co_await (
                     tcp_socket->async_read_some(asio::buffer(buff,
                                                              sizeof(buff)),

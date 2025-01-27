@@ -4,6 +4,7 @@ module;
 #include <netinet/tcp.h>
 
 #include <openssl/ssl.h>
+#include <boost/asio/ip/address.hpp>
 
 export module Network;
 
@@ -24,7 +25,7 @@ export class Network {
     }
 
     asio::awaitable<void> start() {
-        asio::ip::tcp::endpoint endpoint(asio::ip::address::from_string(
+        asio::ip::tcp::endpoint endpoint(asio::ip::make_address(
                                              m_cfg.local_addr),
                                          m_cfg.local_port);
         asio::ip::tcp::acceptor acceptor(co_await asio::this_coro::executor);
