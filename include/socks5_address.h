@@ -1,15 +1,11 @@
-module;
+#pragma once
 
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
+#include <string>
 
-export module Socks5Address;
-
-import std;
-import boost;
-
-export class Socks5Address {
+class Socks5Address {
   public:
     enum AddressType { IPv4 = 1, DOMAINNAME = 3, IPv6 = 4 } address_type;
 

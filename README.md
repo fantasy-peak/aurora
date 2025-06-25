@@ -1,6 +1,7 @@
 # aurora
 
-xmake f --toolchain=llvm --runtimes=c++_static -c
-xmake build -v -y --file=./xmake.lua
-xmake project -k compile_commands
-apt install clang-tools clang clang++ libc++-20-dev libc++-dev libc++abi-dev
+dns2socks -s socks5://127.0.0.1:1080 -l 0.0.0.0:5353
+dig @127.0.0.1 -p 5353 www.google.com +short 
+apt install dnsutils 
+cargo install dns2socks
+apt install liburing-dev

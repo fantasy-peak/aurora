@@ -1,14 +1,12 @@
-module;
+#pragma once
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
 
-export module TrojanRequest;
+#include "socks5_address.h"
 
-import std;
-import Socks5Address;
-
-export class TrojanRequest {
+class TrojanRequest {
   public:
     std::string password;
 

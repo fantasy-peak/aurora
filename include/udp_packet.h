@@ -1,15 +1,12 @@
-module;
+#pragma once
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
 
-export module UdpPacket;
+#include "socks5_address.h"
 
-import std;
-import boost;
-import Socks5Address;
-
-export class UdpPacket {
+class UdpPacket {
   public:
     Socks5Address address;
     uint16_t length;
