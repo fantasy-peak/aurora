@@ -1,5 +1,4 @@
-#ifndef _UTILS_HPP_
-#define _UTILS_HPP_
+#pragma once
 
 #include <functional>
 
@@ -73,5 +72,3 @@ inline std::string SHA224(const std::string &message) {
 }
 
 }  // namespace trojan
-
-#endif  // _UTILS_HPP_

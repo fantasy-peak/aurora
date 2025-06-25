@@ -1,5 +1,4 @@
-#ifndef _IOCTX_POOL_H_
-#define _IOCTX_POOL_H_
+#pragma once
 
 #include <atomic>
 #include <memory>
@@ -37,9 +36,6 @@ class IoCtxPool final {
     std::atomic_uint64_t m_next_io_context;
     std::vector<std::thread> m_threads;
     uint64_t m_pool_size;
-
-};  // namespace trojan
+};
 
 }  // namespace trojan
-
-#endif  // _IOCTX_POOL_H_

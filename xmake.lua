@@ -23,7 +23,7 @@ set_languages("c++23")
 target("trojan-server")
     set_kind("binary")
     add_files("src/main.cpp",
-        "src/ioctx_pool.cpp",
+        "src/io_ctx_pool.cpp",
         "src/server.cpp")
     add_packages("boost", "spdlog", "nlohmann_json", "liburing", "openssl")
     add_ldflags("-static-libstdc++", "-static-libgcc", {force = true})

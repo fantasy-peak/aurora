@@ -7,7 +7,7 @@
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/stream.hpp>
 
-#include "ioctx_pool.h"
+#include "io_ctx_pool.h"
 #include "trojan_request.h"
 #include "utils.h"
 
@@ -42,7 +42,6 @@ class Server final {
 
   private:
     asio::awaitable<void> dns();
-    void initSsl();
     asio::awaitable<void> handshake(
         std::shared_ptr<asio::ssl::stream<asio::ip::tcp::socket>> socket);
     asio::awaitable<void> session(

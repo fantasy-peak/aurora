@@ -1,6 +1,7 @@
 #include <expected>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -62,9 +63,14 @@ asio::awaitable<void> watchdog(
     co_return;
 }
 
-asio::awaitable<void> http301(
-    auto &socket,
-    const std::string &url = "https://www.baidu.com") {
+asio::awaitable<void> http301(auto &socket) {
+    static std::vector<std::string> urls{"https://www.baidu.com",
+                                         "https://www.zhihu.com",
+                                         "https://www.csdn.net/",
+                                         "https://www.oschina.net/"};
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<std::size_t> dist(0, urls.size() - 1);
+    std::string url = urls[dist(rng)];
     namespace http = boost::beast::http;
     http::response<http::empty_body> res{http::status::moved_permanently, 11};
     res.set(http::field::location, url);
@@ -85,33 +91,9 @@ Server::Server(const Config &cfg)
     m_io_ctx_pool->start();
     m_cfg.passwd = SHA224(m_cfg.passwd);
     asio::co_spawn(*m_io_ctx_pool->getMainContext(), dns(), asio::detached);
-    initSsl();
-}
 
-asio::awaitable<void> Server::dns() {
-    m_timer =
-        std::make_unique<asio::steady_timer>(*m_io_ctx_pool->getMainContext());
-    for (;;) {
-        m_timer->expires_after(std::chrono::minutes(2));
-        auto [ec] =
-            co_await m_timer->async_wait(asio::as_tuple(asio::use_awaitable));
-        if (ec) {
-            break;
-        }
-        std::unique_lock<std::mutex> l(m_mtx);
-        std::erase_if(m_results, [&](auto &p) {
-            auto &[addr, cached_result] = p;
-            return std::chrono::steady_clock::now() -
-                       cached_result.expire_time >
-                   m_cfg.dns_cache_time;
-        });
-        l.unlock();
-    }
-}
-
-void Server::initSsl() {
     if (m_cfg.ssl_crt.empty() || m_cfg.ssl_key.empty())
-        return;
+        throw std::runtime_error("ssl crt or key is empty");
 
     uint64_t opts =
         asio::ssl::context::default_workarounds | asio::ssl::context::no_tlsv1 |
@@ -134,6 +116,27 @@ void Server::initSsl() {
 
     auto native = m_ssl_context.native_handle();
     SSL_CTX_set_session_cache_mode(native, SSL_SESS_CACHE_SERVER);
+}
+
+asio::awaitable<void> Server::dns() {
+    m_timer =
+        std::make_unique<asio::steady_timer>(*m_io_ctx_pool->getMainContext());
+    for (;;) {
+        m_timer->expires_after(std::chrono::minutes(2));
+        auto [ec] =
+            co_await m_timer->async_wait(asio::as_tuple(asio::use_awaitable));
+        if (ec) {
+            break;
+        }
+        std::unique_lock<std::mutex> l(m_mtx);
+        std::erase_if(m_results, [&](auto &p) {
+            auto &[addr, cached_result] = p;
+            return std::chrono::steady_clock::now() -
+                       cached_result.expire_time >
+                   m_cfg.dns_cache_time;
+        });
+        l.unlock();
+    }
 }
 
 asio::awaitable<void> Server::start() {
