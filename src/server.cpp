@@ -17,7 +17,7 @@ asio::awaitable<void> forward(
     T to_socket,
     std::shared_ptr<std::chrono::steady_clock::time_point> deadline,
     Server::Config &cfg) {
-    std::vector<char> buffer(32 * 1024);
+    std::array<char, 32 * 1024> buffer;
     for (;;) {
         *deadline = std::chrono::steady_clock::now() + cfg.read_write_max_idle;
         auto [ec, length] = co_await from_socket->async_read_some(
@@ -147,12 +147,12 @@ asio::awaitable<void> Server::start() {
     m_acceptor->set_option(asio::ip::tcp::acceptor::reuse_address(true));
     [[maybe_unused]] auto _ = m_acceptor->bind(m_ep, ec);
     if (ec) {
-        spdlog::error("bind: {}", ec.message());
+        SPDLOG_ERROR("bind: {}", ec.message());
         throw std::runtime_error(ec.message());
     }
     _ = m_acceptor->listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
-        spdlog::error("listen: {}", ec.message());
+        SPDLOG_ERROR("listen: {}", ec.message());
         throw std::runtime_error(ec.message());
     }
     for (;;) {
@@ -168,9 +168,9 @@ asio::awaitable<void> Server::start() {
         }
         auto endpoint = socket.remote_endpoint(ec);
         if (!ec) {
-            spdlog::debug("new connection from [{}:{}]",
-                          endpoint.address().to_string(),
-                          endpoint.port());
+            SPDLOG_DEBUG("new connection from [{}:{}]",
+                         endpoint.address().to_string(),
+                         endpoint.port());
         }
         socket.set_option(asio::socket_base::keep_alive(true));
 
@@ -190,15 +190,17 @@ asio::awaitable<void> Server::handshake(
                                 asio::as_tuple(asio::use_awaitable)) ||
         timeout(m_cfg.timeout));
     if (result.index() == 1) {
-        spdlog::error("async_handshake timeout");
+        SPDLOG_ERROR("async_handshake timeout");
         co_return;
     }
     auto [ec] = std::get<0>(result);
     if (ec) {
-        spdlog::error("async_handshake: {}", ec.message());
+        SPDLOG_ERROR("async_handshake: {}", ec.message());
         co_return;
     }
-    asio::co_spawn(socket->get_executor(), session(socket), asio::detached);
+    asio::co_spawn(co_await asio::this_coro::executor,
+                   session(std::move(socket)),
+                   asio::detached);
 }
 
 asio::awaitable<std::expected<TrojanRequest, Server::ParseError>> Server::
@@ -216,7 +218,7 @@ asio::awaitable<std::expected<TrojanRequest, Server::ParseError>> Server::
             asio::buffer(buffer, sizeof(buffer)),
             asio::as_tuple(asio::use_awaitable));
         if (ec) {
-            spdlog::error("async_read_some: {}", ec.message());
+            SPDLOG_ERROR("async_read_some: {}", ec.message());
             co_return std::unexpected(ParseError::NetworkError);
         }
         request.append(buffer, length);
@@ -224,8 +226,8 @@ asio::awaitable<std::expected<TrojanRequest, Server::ParseError>> Server::
                                                         request.begin() + 56,
                                                         cfg.passwd.begin(),
                                                         cfg.passwd.end())) {
-            spdlog::error("invalid password: [{}]",
-                          std::string{request.begin(), request.begin() + 56});
+            SPDLOG_ERROR("invalid password: [{}]",
+                         std::string{request.begin(), request.begin() + 56});
             co_await http301(socket);
             co_return std::unexpected(ParseError::PasswordError);
         }
@@ -233,7 +235,7 @@ asio::awaitable<std::expected<TrojanRequest, Server::ParseError>> Server::
             break;
         }
         if (request.size() > MAX_REQUEST_SIZE) {
-            spdlog::error("request size too large: {}", request.size());
+            SPDLOG_ERROR("request size too large: {}", request.size());
             co_await http301(socket);
             co_return std::unexpected(ParseError::PasswordError);
         }
@@ -256,9 +258,7 @@ Server::resolve(const TrojanRequest &req) {
                                           std::to_string(req.address.port),
                                           asio::as_tuple(asio::use_awaitable));
         if (ec) {
-            spdlog::error("resolve [{}]: {}",
-                          req.address.address,
-                          ec.message());
+            SPDLOG_ERROR("resolve [{}]: {}", req.address.address, ec.message());
             co_return std::nullopt;
         }
 
@@ -275,9 +275,9 @@ Server::resolve(const TrojanRequest &req) {
             }
         }
         if (ipv4_entries.empty()) {
-            spdlog::info("ipv4_entries: {} ipv6_entries: {}",
-                         ipv4_entries.size(),
-                         ipv6_entries.size());
+            SPDLOG_INFO("ipv4_entries: {} ipv6_entries: {}",
+                        ipv4_entries.size(),
+                        ipv6_entries.size());
         }
 
         std::vector<asio::ip::tcp::resolver::results_type::value_type>
@@ -346,7 +346,7 @@ asio::awaitable<void> Server::session(
                 *socket, buffer, parser, asio::as_tuple(asio::use_awaitable)) ||
             timeout(m_cfg.timeout));
         if (result.index() == 1) {
-            spdlog::error("async_read_header timeout");
+            SPDLOG_ERROR("async_read_header timeout");
             co_return;
         }
         auto [ec, bytes] = std::get<0>(result);
@@ -358,7 +358,7 @@ asio::awaitable<void> Server::session(
             auto req_str = beast::buffers_to_string(buffer.data());
             if (req.parse(req_str) != -1) {
                 if (req.password != m_cfg.passwd) {
-                    spdlog::error("password error: {}", req.password);
+                    SPDLOG_ERROR("password error: {}", req.password);
                     co_await http301(socket);
                     co_return;
                 }
@@ -367,7 +367,7 @@ asio::awaitable<void> Server::session(
                     co_await (recvRequest(socket, time_point, req_str, m_cfg) ||
                               watchdog(time_point));
                 if (result.index() == 1) {
-                    spdlog::error("recvRequest timeout");
+                    SPDLOG_ERROR("recvRequest timeout");
                     co_return;
                 }
                 auto &exception_req = std::get<0>(result);
@@ -377,13 +377,13 @@ asio::awaitable<void> Server::session(
                 req = std::move(exception_req.value());
             }
         } else if (ec) {
-            spdlog::error("{}", ec.message());
+            SPDLOG_ERROR("{}", ec.message());
             co_await http301(socket);
             co_return;
         } else {
             auto &headers = parser.get();
             if (m_cfg.path != headers.target()) {
-                spdlog::error("not expected path: {}", headers.target().data());
+                SPDLOG_ERROR("not expected path: {}", headers.target().data());
                 co_await http301(socket);
                 co_return;
             }
@@ -396,7 +396,7 @@ asio::awaitable<void> Server::session(
                                            res,
                                            asio::as_tuple(asio::use_awaitable));
             if (ec) {
-                spdlog::error("http write error: {}", ec.message());
+                SPDLOG_ERROR("http write error: {}", ec.message());
                 co_return;
             }
 
@@ -405,7 +405,7 @@ asio::awaitable<void> Server::session(
                 co_await (recvRequest(socket, time_point, req_str, m_cfg) ||
                           watchdog(time_point));
             if (result.index() == 1) {
-                spdlog::error("recvRequest timeout");
+                SPDLOG_ERROR("recvRequest timeout");
                 co_return;
             }
             auto &exception_req = std::get<0>(result);
@@ -444,7 +444,9 @@ asio::awaitable<void> Server::session(
         if (result.index() == 0) {
             auto [ec, ret] = std::get<0>(result);
             if (ec) {
-                spdlog::error("connect: {}", ec.message());
+                SPDLOG_ERROR("connect [{}] error: {}",
+                             req.address.address,
+                             ec.message());
                 {
                     std::unique_lock<std::mutex> lock(m_mtx);
                     m_results.erase(req.address.address);
@@ -452,7 +454,7 @@ asio::awaitable<void> Server::session(
                 co_return;
             }
         } else if (result.index() == 1) {
-            spdlog::error("connect timeout: {}", req.address.address);
+            SPDLOG_ERROR("connect timeout: {}", req.address.address);
             {
                 std::unique_lock<std::mutex> lock(m_mtx);
                 m_results.erase(req.address.address);
@@ -460,11 +462,11 @@ asio::awaitable<void> Server::session(
             co_return;
         }
         auto end = getCurrentTimestampMs();
-        if (end - start > 60) {
-            spdlog::info("req.address.address: {}:{} -> {}",
-                         req.address.address,
-                         req.address.port,
-                         end - start);
+        if (end - start > 100) {
+            SPDLOG_INFO("req.address.address: {}:{} -> {}",
+                        req.address.address,
+                        req.address.port,
+                        end - start);
         }
 
         if (!req.payload.empty()) {
@@ -473,7 +475,7 @@ asio::awaitable<void> Server::session(
                     asio::buffer(req.payload.data(), req.payload.size()),
                     asio::as_tuple(asio::use_awaitable));
                 ec) {
-                spdlog::error("async_write: {}", ec.message());
+                SPDLOG_ERROR("async_write: {}", ec.message());
                 co_return;
             }
         }
@@ -523,7 +525,7 @@ asio::awaitable<void> Server::session(
                     }
                 } else {
                     payload = payload.substr(packet_len);
-                    spdlog::debug("query_addr: [{}]", packet.address.address);
+                    SPDLOG_DEBUG("query_addr: [{}]", packet.address.address);
                     auto udp_to_tcp =
                         [](auto tcp_socket,
                            auto udp_socket,
@@ -552,7 +554,7 @@ asio::awaitable<void> Server::session(
                                     asio::buffer(data),
                                     asio::as_tuple(asio::use_awaitable));
                                 ec) {
-                                spdlog::error("{}", ec.message());
+                                SPDLOG_ERROR("{}", ec.message());
                                 break;
                             }
                         }
@@ -566,7 +568,7 @@ asio::awaitable<void> Server::session(
                                 std::to_string(packet.address.port),
                                 asio::as_tuple(asio::use_awaitable));
                         if (err || results.empty()) {
-                            spdlog::error("resolve error: {}", err.message());
+                            SPDLOG_ERROR("resolve error: {}", err.message());
                             break;
                         }
                         for (const auto &entry : results) {
@@ -577,14 +579,14 @@ asio::awaitable<void> Server::session(
                             boost::system::error_code ec;
                             udp_socket->open(protocol, ec);
                             if (ec) {
-                                spdlog::error("open: {}", ec.message());
+                                SPDLOG_ERROR("open: {}", ec.message());
                                 co_return;
                             }
                             udp_socket->bind(asio::ip::udp::endpoint(protocol,
                                                                      0),
                                              ec);
                             if (ec) {
-                                spdlog::error("bind: {}", ec.message());
+                                SPDLOG_ERROR("bind: {}", ec.message());
                                 co_return;
                             }
                             udp_map[packet.address.address] =
@@ -607,7 +609,7 @@ asio::awaitable<void> Server::session(
                         endpoint,
                         asio::as_tuple(asio::use_awaitable));
                     if (ec) {
-                        spdlog::error("async_send_to: {}", ec.message());
+                        SPDLOG_ERROR("async_send_to: {}", ec.message());
                         break;
                     }
                 }
