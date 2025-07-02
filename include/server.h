@@ -9,6 +9,7 @@
 
 #include "io_ctx_pool.h"
 #include "trojan_request.h"
+#include "dns_resolver.h"
 #include "utils.h"
 
 namespace trojan {
@@ -60,6 +61,7 @@ class Server final {
     asio::ip::tcp::endpoint m_ep;
     std::shared_ptr<IoCtxPool> m_io_ctx_pool;
     asio::ssl::context m_ssl_context{asio::ssl::context::tlsv13_server};
+    std::shared_ptr<DnsResolver> m_dns_resolver;
     std::unique_ptr<asio::ip::tcp::acceptor> m_acceptor;
     std::mutex m_mtx;
     std::unique_ptr<asio::steady_timer> m_timer;

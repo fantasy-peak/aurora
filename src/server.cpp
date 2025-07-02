@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include "server.h"
+#include "dns_resolver.h"
 #include "trojan_request.h"
 #include "udp_packet.h"
 
@@ -90,6 +91,7 @@ Server::Server(const Config &cfg)
     m_io_ctx_pool->createMainContext();
     m_io_ctx_pool->start();
     m_cfg.passwd = SHA224(m_cfg.passwd);
+    m_dns_resolver = std::make_shared<DnsResolver>(cfg.worker_num * 2);
     asio::co_spawn(*m_io_ctx_pool->getMainContext(), dns(), asio::detached);
 
     if (m_cfg.ssl_crt.empty() || m_cfg.ssl_key.empty())
@@ -248,65 +250,23 @@ asio::awaitable<std::optional<
 Server::resolve(const TrojanRequest &req) {
     std::vector<asio::ip::tcp::resolver::results_type::value_type> results;
 
-    auto async_resolve = [](auto &req)
-        -> asio::awaitable<std::optional<
-            std::vector<asio::ip::tcp::resolver::results_type::value_type>>> {
-        auto solver =
-            asio::ip::tcp::resolver(co_await asio::this_coro::executor);
-        auto [ec, results] =
-            co_await solver.async_resolve(req.address.address,
-                                          std::to_string(req.address.port),
-                                          asio::as_tuple(asio::use_awaitable));
-        if (ec) {
-            SPDLOG_ERROR("resolve [{}]: {}", req.address.address, ec.message());
-            co_return std::nullopt;
-        }
-
-        std::vector<asio::ip::tcp::resolver::results_type::value_type>
-            ipv4_entries;
-        std::vector<asio::ip::tcp::resolver::results_type::value_type>
-            ipv6_entries;
-
-        for (const auto &entry : results) {
-            if (entry.endpoint().address().is_v4()) {
-                ipv4_entries.push_back(entry);
-            } else {
-                ipv6_entries.push_back(entry);
-            }
-        }
-        if (ipv4_entries.empty()) {
-            SPDLOG_INFO("ipv4_entries: {} ipv6_entries: {}",
-                        ipv4_entries.size(),
-                        ipv6_entries.size());
-        }
-
-        std::vector<asio::ip::tcp::resolver::results_type::value_type>
-            prioritized_entries;
-
-        prioritized_entries.insert(prioritized_entries.end(),
-                                   ipv4_entries.begin(),
-                                   ipv4_entries.end());
-        prioritized_entries.insert(prioritized_entries.end(),
-                                   ipv6_entries.begin(),
-                                   ipv6_entries.end());
-
-        co_return prioritized_entries;
-    };
-
     std::unique_lock<std::mutex> lock(m_mtx);
     if (m_results.contains(req.address.address)) {
         results = m_results[req.address.address].results;
         lock.unlock();
     } else {
         lock.unlock();
-        auto opt = co_await async_resolve(req);
-        if (!opt.has_value()) {
+        auto opt =
+            co_await m_dns_resolver->resolve1(req.address.address,
+                                              std::to_string(req.address.port),
+                                              boost::asio::use_awaitable);
+        if (opt.empty()) {
             co_return std::nullopt;
         }
         std::unique_lock<std::mutex> lock(m_mtx);
-        results = opt.value();
+        results = opt;
         m_results[req.address.address] = CachedResult{
-            .results = std::move(opt.value()),
+            .results = std::move(opt),
         };
     }
     co_return results;
@@ -485,10 +445,10 @@ asio::awaitable<void> Server::session(
                   watchdog(time_point));
 
     } else {
-        auto recv_udp = [](auto self,
-                           auto payload,
-                           auto socket,
-                           auto deadline) -> asio::awaitable<void> {
+        auto recv_udp = [this](auto self,
+                               auto payload,
+                               auto socket,
+                               auto deadline) -> asio::awaitable<void> {
             std::unordered_map<
                 std::string,
                 std::pair<asio::ip::udp::endpoint,
@@ -560,15 +520,12 @@ asio::awaitable<void> Server::session(
                         }
                     };
                     if (!udp_map.contains(packet.address.address)) {
-                        asio::ip::udp::resolver udp_resolver(
-                            co_await asio::this_coro::executor);
-                        auto [err, results] =
-                            co_await udp_resolver.async_resolve(
-                                packet.address.address,
-                                std::to_string(packet.address.port),
-                                asio::as_tuple(asio::use_awaitable));
-                        if (err || results.empty()) {
-                            SPDLOG_ERROR("resolve error: {}", err.message());
+                        auto results = co_await m_dns_resolver->resolve2(
+                            packet.address.address,
+                            std::to_string(packet.address.port),
+                            asio::use_awaitable);
+                        if (results.empty()) {
+                            SPDLOG_ERROR("udp resolve error");
                             break;
                         }
                         for (const auto &entry : results) {
