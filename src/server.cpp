@@ -91,8 +91,13 @@ Server::Server(const Config &cfg)
     m_io_ctx_pool->createMainContext();
     m_io_ctx_pool->start();
     m_cfg.passwd = SHA224(m_cfg.passwd);
-    m_dns_resolver = std::make_shared<DnsResolver>(cfg.worker_num * 2);
-    asio::co_spawn(*m_io_ctx_pool->getMainContext(), dns(), asio::detached);
+    m_pool = std::make_unique<BS::thread_pool<>>(cfg.worker_num + 1);
+    m_tcp_dns_resolver = std::make_shared<
+        DnsResolver<asio::ip::tcp::resolver::results_type::value_type>>(
+        m_pool, m_io_ctx_pool->getMainContext());
+    m_udp_dns_resolver = std::make_shared<
+        DnsResolver<asio::ip::udp::resolver::results_type::value_type>>(
+        m_pool, m_io_ctx_pool->getMainContext());
 
     if (m_cfg.ssl_crt.empty() || m_cfg.ssl_key.empty())
         throw std::runtime_error("ssl crt or key is empty");
@@ -118,27 +123,6 @@ Server::Server(const Config &cfg)
 
     auto native = m_ssl_context.native_handle();
     SSL_CTX_set_session_cache_mode(native, SSL_SESS_CACHE_SERVER);
-}
-
-asio::awaitable<void> Server::dns() {
-    m_timer =
-        std::make_unique<asio::steady_timer>(*m_io_ctx_pool->getMainContext());
-    for (;;) {
-        m_timer->expires_after(std::chrono::minutes(2));
-        auto [ec] =
-            co_await m_timer->async_wait(asio::as_tuple(asio::use_awaitable));
-        if (ec) {
-            break;
-        }
-        std::unique_lock<std::mutex> l(m_mtx);
-        std::erase_if(m_results, [&](auto &p) {
-            auto &[addr, cached_result] = p;
-            return std::chrono::steady_clock::now() -
-                       cached_result.expire_time >
-                   m_cfg.dns_cache_time;
-        });
-        l.unlock();
-    }
 }
 
 asio::awaitable<void> Server::start() {
@@ -243,33 +227,6 @@ asio::awaitable<std::expected<TrojanRequest, Server::ParseError>> Server::
         }
     }
     co_return req;
-}
-
-asio::awaitable<std::optional<
-    std::vector<asio::ip::tcp::resolver::results_type::value_type>>>
-Server::resolve(const TrojanRequest &req) {
-    std::vector<asio::ip::tcp::resolver::results_type::value_type> results;
-
-    std::unique_lock<std::mutex> lock(m_mtx);
-    if (m_results.contains(req.address.address)) {
-        results = m_results[req.address.address].results;
-        lock.unlock();
-    } else {
-        lock.unlock();
-        auto opt =
-            co_await m_dns_resolver->resolve1(req.address.address,
-                                              std::to_string(req.address.port),
-                                              boost::asio::use_awaitable);
-        if (opt.empty()) {
-            co_return std::nullopt;
-        }
-        std::unique_lock<std::mutex> lock(m_mtx);
-        results = opt;
-        m_results[req.address.address] = CachedResult{
-            .results = std::move(opt),
-        };
-    }
-    co_return results;
 }
 
 void Server::stop() {
@@ -389,11 +346,14 @@ asio::awaitable<void> Server::session(
             out_socket->close(ec);
         });
 
-        auto results_opt = co_await resolve(req);
-        if (!results_opt.has_value()) {
+        auto results = co_await m_tcp_dns_resolver->async_resolve(
+            req.address.address,
+            std::to_string(req.address.port),
+            boost::asio::use_awaitable);
+        if (results.empty()) {
+            SPDLOG_ERROR("tcp resolve [{}] error", req.address.address);
             co_return;
         }
-        auto &results = results_opt.value();
 
         auto start = getCurrentTimestampMs();
         auto result = co_await (
@@ -407,18 +367,12 @@ asio::awaitable<void> Server::session(
                 SPDLOG_ERROR("connect [{}] error: {}",
                              req.address.address,
                              ec.message());
-                {
-                    std::unique_lock<std::mutex> lock(m_mtx);
-                    m_results.erase(req.address.address);
-                }
+                m_tcp_dns_resolver->clear(req.address.address);
                 co_return;
             }
         } else if (result.index() == 1) {
             SPDLOG_ERROR("connect timeout: {}", req.address.address);
-            {
-                std::unique_lock<std::mutex> lock(m_mtx);
-                m_results.erase(req.address.address);
-            }
+            m_tcp_dns_resolver->clear(req.address.address);
             co_return;
         }
         auto end = getCurrentTimestampMs();
@@ -464,6 +418,36 @@ asio::awaitable<void> Server::session(
                     }
                 }
             });
+            auto udp_to_tcp = [](auto tcp_socket,
+                                 auto udp_socket,
+                                 auto deadline,
+                                 auto max_idle) -> asio::awaitable<void> {
+                asio::ip::udp::endpoint udp_recv_endpoint;
+                char buff[4096];
+                for (;;) {
+                    *deadline = std::chrono::steady_clock::now() + max_idle;
+                    auto [ec, len] = co_await udp_socket->async_receive_from(
+                        asio::buffer(buff, sizeof(buff)),
+                        udp_recv_endpoint,
+                        asio::as_tuple(asio::use_awaitable));
+                    if (ec) {
+                        // TROJAN_INFO_LOG("async_receive_from: {}",
+                        // ec.message());
+                        break;
+                    }
+                    auto data = UdpPacket::generate(udp_recv_endpoint,
+                                                    std::string(buff, len));
+                    if (auto [ec, len] = co_await asio::async_write(
+                            *tcp_socket,
+                            asio::buffer(data),
+                            asio::as_tuple(asio::use_awaitable));
+                        ec) {
+                        SPDLOG_ERROR("{}", ec.message());
+                        break;
+                    }
+                }
+                co_return;
+            };
             for (;;) {
                 *deadline = std::chrono::steady_clock::now() +
                             self->m_cfg.read_write_max_idle;
@@ -483,94 +467,67 @@ asio::awaitable<void> Server::session(
                         co_await http301(socket);
                         break;
                     }
-                } else {
-                    payload = payload.substr(packet_len);
-                    SPDLOG_DEBUG("query_addr: [{}]", packet.address.address);
-                    auto udp_to_tcp =
-                        [](auto tcp_socket,
-                           auto udp_socket,
-                           auto deadline,
-                           auto max_idle) -> asio::awaitable<void> {
-                        asio::ip::udp::endpoint udp_recv_endpoint;
-                        char buff[4096];
-                        for (;;) {
-                            *deadline =
-                                std::chrono::steady_clock::now() + max_idle;
-                            auto [ec, len] =
-                                co_await udp_socket->async_receive_from(
-                                    asio::buffer(buff, sizeof(buff)),
-                                    udp_recv_endpoint,
-                                    asio::as_tuple(asio::use_awaitable));
-                            if (ec) {
-                                // TROJAN_INFO_LOG("async_receive_from: {}",
-                                // ec.message());
-                                break;
-                            }
-                            auto data =
-                                UdpPacket::generate(udp_recv_endpoint,
-                                                    std::string(buff, len));
-                            if (auto [ec, len] = co_await asio::async_write(
-                                    *tcp_socket,
-                                    asio::buffer(data),
-                                    asio::as_tuple(asio::use_awaitable));
-                                ec) {
-                                SPDLOG_ERROR("{}", ec.message());
-                                break;
-                            }
-                        }
-                    };
-                    if (!udp_map.contains(packet.address.address)) {
-                        auto results = co_await m_dns_resolver->resolve2(
-                            packet.address.address,
-                            std::to_string(packet.address.port),
-                            asio::use_awaitable);
-                        if (results.empty()) {
-                            SPDLOG_ERROR("udp resolve error");
-                            break;
-                        }
-                        for (const auto &entry : results) {
-                            auto udp_socket =
-                                std::make_shared<asio::ip::udp::socket>(
-                                    co_await asio::this_coro::executor);
-                            auto protocol = entry.endpoint().protocol();
-                            boost::system::error_code ec;
-                            udp_socket->open(protocol, ec);
-                            if (ec) {
-                                SPDLOG_ERROR("open: {}", ec.message());
-                                co_return;
-                            }
-                            udp_socket->bind(asio::ip::udp::endpoint(protocol,
-                                                                     0),
-                                             ec);
-                            if (ec) {
-                                SPDLOG_ERROR("bind: {}", ec.message());
-                                co_return;
-                            }
-                            udp_map[packet.address.address] =
-                                std::make_pair(entry.endpoint(), udp_socket);
-                            asio::co_spawn(
-                                co_await asio::this_coro::executor,
-                                udp_to_tcp(socket,
-                                           udp_socket,
-                                           deadline,
-                                           self->m_cfg.read_write_max_idle),
-                                asio::detached);
-                            break;
-                        }
-                    }
-                    auto &[endpoint, udp_socket] =
-                        udp_map[packet.address.address];
-                    auto [ec, len] = co_await udp_socket->async_send_to(
-                        boost::asio::buffer(packet.payload.c_str(),
-                                            packet.payload.size()),
-                        endpoint,
-                        asio::as_tuple(asio::use_awaitable));
-                    if (ec) {
-                        SPDLOG_ERROR("async_send_to: {}", ec.message());
+                    continue;
+                }
+                payload = payload.substr(packet_len);
+                SPDLOG_DEBUG("query_addr: [{}]", packet.address.address);
+                if (!udp_map.contains(packet.address.address)) {
+                    auto results = co_await m_udp_dns_resolver->async_resolve(
+                        packet.address.address,
+                        std::to_string(packet.address.port),
+                        asio::use_awaitable);
+                    if (results.empty()) {
+                        SPDLOG_ERROR("udp resolve error: [{}]",
+                                     packet.address.address);
                         break;
                     }
+                    for (const auto &entry : results) {
+                        auto udp_socket =
+                            std::make_shared<asio::ip::udp::socket>(
+                                co_await asio::this_coro::executor);
+                        auto protocol = entry.endpoint().protocol();
+                        boost::system::error_code ec;
+                        udp_socket->open(protocol, ec);
+                        if (ec) {
+                            SPDLOG_ERROR("open: {}", ec.message());
+                            continue;
+                        }
+                        udp_socket->bind(asio::ip::udp::endpoint(protocol, 0),
+                                         ec);
+                        if (ec) {
+                            SPDLOG_ERROR("bind: {}", ec.message());
+                            continue;
+                        }
+                        udp_map[packet.address.address] =
+                            std::make_pair(entry.endpoint(), udp_socket);
+                        asio::co_spawn(
+                            co_await asio::this_coro::executor,
+                            udp_to_tcp(socket,
+                                       udp_socket,
+                                       deadline,
+                                       self->m_cfg.read_write_max_idle),
+                            asio::detached);
+                        break;
+                    }
+                    if (!udp_map.contains(packet.address.address)) {
+                        SPDLOG_INFO("clear udp dns cache: {}",
+                                    packet.address.address);
+                        m_udp_dns_resolver->clear(packet.address.address);
+                        co_return;
+                    }
+                }
+                auto &[endpoint, udp_socket] = udp_map[packet.address.address];
+                auto [ec, len] = co_await udp_socket->async_send_to(
+                    boost::asio::buffer(packet.payload.c_str(),
+                                        packet.payload.size()),
+                    endpoint,
+                    asio::as_tuple(asio::use_awaitable));
+                if (ec) {
+                    SPDLOG_ERROR("async_send_to: {}", ec.message());
+                    break;
                 }
             }
+            co_return;
         };
 
         auto deadline = std::make_shared<std::chrono::steady_clock::time_point>(

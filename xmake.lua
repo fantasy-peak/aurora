@@ -26,8 +26,7 @@ target("trojan-server")
     set_kind("binary")
     add_files("src/main.cpp",
         "src/io_ctx_pool.cpp",
-        "src/server.cpp",
-        "src/dns_resolver.cpp")
+        "src/server.cpp")
     add_packages("boost", "spdlog", "nlohmann_json", "liburing", "openssl3", "thread-pool")
     add_ldflags("-static-libstdc++", "-static-libgcc", {force = true})
 target_end()
